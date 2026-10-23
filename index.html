@@ -1,0 +1,192 @@
+"use strict";
+/* ===== LankaWeather.lk – vanilla JS ===== */
+
+// Verified city coordinates
+const CITIES = [
+  { id: "colombo", si: "කොළඹ", en: "Colombo", lat: 6.9271, lon: 79.8612 },
+  { id: "negombo", si: "මීගමුව", en: "Negombo", lat: 7.2008, lon: 79.8737 },
+  { id: "kandy", si: "මහනුවර", en: "Kandy", lat: 7.2906, lon: 80.6337 },
+  { id: "galle", si: "ගාල්ල", en: "Galle", lat: 6.0535, lon: 80.2210 },
+  { id: "jaffna", si: "යාපනය", en: "Jaffna", lat: 9.6615, lon: 80.0255 },
+  { id: "anuradhapura", si: "අනුරාධපුර", en: "Anuradhapura", lat: 8.3114, lon: 80.4037 },
+  { id: "badulla", si: "බදුල්ල", en: "Badulla", lat: 6.9934, lon: 81.0550 },
+  { id: "ratnapura", si: "රත්නපුර", en: "Ratnapura", lat: 6.6828, lon: 80.3992 }
+];
+
+// Rivers: no verified public feed, so no values are ever shown.
+const RIVERS = ["කැලණි ගඟ (Kelani)", "කළු ගඟ (Kalu)", "නිල්වලා ගඟ (Nilwala)", "ගිං ගඟ (Gin)", "මහවැලි ගඟ (Mahaweli)", "අත්තනගලු ඔය (Attanagalu Oya)"];
+
+/* Safe integration structure: when you have a backend proxy that returns
+   verified official data (never put private keys in frontend code), put its URL here
+   and write a parser. Leave null while no verified feed exists. */
+const OFFICIAL_FEEDS = { alerts: null, rivers: null, news: null };
+
+const API = "https://api.open-meteo.com/v1/forecast";
+const $ = (id) => document.getElementById(id);
+let current = CITIES[0];
+
+// WMO weather code -> icon + Sinhala description
+function describe(code) {
+  if (code === 0) return ["☀️", "පැහැදිලි අහස"];
+  if (code === 1) return ["🌤️", "බොහෝ දුරට පැහැදිලි"];
+  if (code === 2) return ["⛅", " අර්ධ වශයෙන් වලාකුළු"];
+  if (code === 3) return ["☁️", "වලාකුළු සහිත"];
+  if (code === 45 || code === 48) return ["🌫️", "මීදුම්"];
+  if (code >= 51 && code <= 57) return ["🌦️", "සිහින් වැසි"];
+  if (code >= 61 && code <= 67) return ["🌧️", "වැසි"];
+  if (code >= 71 && code <= 77) return ["❄️", "හිම"];
+  if (code >= 80 && code <= 82) return ["🌧️", "වැසි වාර"];
+  if (code === 85 || code === 86) return ["❄️", "හිම වැසි"];
+  if (code >= 95) return ["⛈️", "ගිගුරුම් සහිත වැසි"];
+  return ["🌡️", "නොදන්නා"];
+}
+
+// Format dates in Sri Lanka time
+const fmtDay = (iso) => new Date(iso + "T00:00:00+05:30").toLocaleDateString("si-LK", { weekday: "short", month: "short", day: "numeric", timeZone: "Asia/Colombo" });
+const nowSL = () => new Date().toLocaleString("si-LK", { timeZone: "Asia/Colombo", dateStyle: "medium", timeStyle: "short" });
+
+function setStatus(html) { $("status").innerHTML = html; }
+function loading() { setStatus('<div class="loader"><div class="spin"></div>දත්ත ලබා ගනිමින්...</div>'); }
+function showError(msg) {
+  setStatus(`<div class="error"><span>⚠️ ${msg}</span><button class="btn" id="retryBtn">නැවත උත්සාහ කරන්න</button></div>`);
+  $("retryBtn").addEventListener("click", loadAll);
+}
+
+// Fetch JSON with timeout and HTTP error handling
+async function getJSON(url) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return await r.json();
+  } finally { clearTimeout(t); }
+}
+
+// Load current + 5-day forecast for the selected city
+async function loadWeather() {
+  const p = new URLSearchParams({
+    latitude: current.lat, longitude: current.lon, timezone: "Asia/Colombo", forecast_days: 5,
+    current: "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
+    daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,wind_speed_10m_max"
+  });
+  const d = await getJSON(`${API}?${p}`);
+  const c = d.current, u = d.current_units;
+  const [ico, txt] = describe(c.weather_code);
+  $("heroIcon").textContent = ico;
+  $("heroCity").textContent = `${current.si} (${current.en})`;
+  $("heroTemp").textContent = `${Math.round(c.temperature_2m)}${u.temperature_2m}`;
+  $("heroCond").textContent = txt;
+  $("sFeels").textContent = `${Math.round(c.apparent_temperature)}${u.apparent_temperature}`;
+  $("sHum").textContent = `${c.relative_humidity_2m}${u.relative_humidity_2m}`;
+  $("sWind").textContent = `${c.wind_speed_10m} ${u.wind_speed_10m}`;
+  $("sRain").textContent = `${c.precipitation} ${u.precipitation}`;
+  $("updated").textContent = `අවසන් යාවත්කාලීනය: ${nowSL()} (ශ්‍රී ලංකා වේලාව) · දත්ත වේලාව: ${c.time.replace("T", " ")}`;
+  $("hero").hidden = false;
+
+  const f = d.daily;
+  $("forecast").innerHTML = f.time.map((day, i) => {
+    const [fi, ft] = describe(f.weather_code[i]);
+    return `<article class="card day"><b>${fmtDay(day)}</b><div class="ico" aria-hidden="true">${fi}</div><div>${ft}</div>
+      <div><span class="hi">${Math.round(f.temperature_2m_max[i])}°</span> / <span class="lo">${Math.round(f.temperature_2m_min[i])}°</span></div>
+      <small class="muted">වැසි ඉඩ: ${f.precipitation_probability_max[i] ?? "—"}%</small></article>`;
+  }).join("");
+
+  forecastHint(f);
+}
+
+// Model-based hint only (clearly NOT an official warning)
+function forecastHint(f) {
+  const el = $("forecastHint");
+  const rain = Math.max(...f.precipitation_sum), wind = Math.max(...f.wind_speed_10m_max);
+  const notes = [];
+  if (rain >= 50) notes.push(`${current.si}: ඉදිරි දින 5 තුළ දිනක උපරිම වර්ෂාපතන අනාවැකිය ${rain} mm`);
+  if (wind >= 40) notes.push(`උපරිම සුළං වේග අනාවැකිය ${wind} km/h`);
+  if (notes.length) {
+    el.innerHTML = `<b>ආදර්ශ අනාවැකි දර්ශකය (නිල අනතුරු ඇඟවීමක් නොවේ):</b> ${notes.join(" · ")}. නිල තත්ත්වය meteo.gov.lk හි පරීක්ෂා කරන්න.`;
+    el.hidden = false;
+  } else el.hidden = true;
+}
+
+// Overview of all cities in ONE request (Open-Meteo accepts comma separated coordinates)
+async function loadOverview() {
+  const p = new URLSearchParams({
+    latitude: CITIES.map(c => c.lat).join(","), longitude: CITIES.map(c => c.lon).join(","),
+    timezone: "Asia/Colombo", current: "temperature_2m,weather_code"
+  });
+  const data = await getJSON(`${API}?${p}`);
+  const arr = Array.isArray(data) ? data : [data];
+  $("overview").innerHTML = arr.map((d, i) => {
+    const [ico, txt] = describe(d.current.weather_code);
+    return `<button class="card ov" data-id="${CITIES[i].id}"><span class="ico" aria-hidden="true">${ico}</span>
+      <h3>${CITIES[i].si}</h3><b>${Math.round(d.current.temperature_2m)}°C</b> · ${txt}</button>`;
+  }).join("");
+  document.querySelectorAll(".ov").forEach(b => b.addEventListener("click", () => {
+    selectCity(b.dataset.id);
+    $("weather").scrollIntoView();
+  }));
+}
+
+// Load everything with loading/error states
+async function loadAll() {
+  loading();
+  try {
+    await Promise.all([loadWeather(), loadOverview()]);
+    setStatus("");
+  } catch (e) {
+    $("hero").hidden = true;
+    showError(e.name === "AbortError" ? "ඉල්ලීම කල් ඉකුත් විය." : "කාලගුණ දත්ත ලබාගැනීමට නොහැකි විය. අන්තර්ජාල සම්බන්ධතාව පරීක්ෂා කරන්න.");
+  }
+}
+
+// City selector + search
+function fillSelect(filter = "") {
+  const q = filter.trim().toLowerCase();
+  const list = CITIES.filter(c => c.si.includes(q) || c.en.toLowerCase().includes(q));
+  $("citySelect").innerHTML = list.length
+    ? list.map(c => `<option value="${c.id}" ${c.id === current.id ? "selected" : ""}>${c.si} – ${c.en}</option>`).join("")
+    : '<option value="">ප්‍රතිඵල නැත</option>';
+}
+function selectCity(id) {
+  const c = CITIES.find(x => x.id === id);
+  if (!c) return;
+  current = c;
+  $("citySearch").value = "";
+  fillSelect();
+  loadAll(); // refresh when city changes
+}
+
+// River table: honest "unavailable" rows
+function renderRivers() {
+  const na = '<span class="na">ලබාගත නොහැක</span>';
+  $("riverBody").innerHTML = RIVERS.map(r => `<tr><td><b>${r}</b></td><td>${na}</td><td>${na}</td><td>${na}</td><td>${na}</td>
+    <td><a href="https://irrigation.gov.lk/" target="_blank" rel="noopener">වාරිමාර්ග දෙපාර්තමේන්තුව ↗</a></td></tr>`).join("");
+}
+
+// Dark mode (saved if storage is allowed)
+function applyTheme(t) {
+  document.documentElement.setAttribute("data-theme", t);
+  $("themeBtn").textContent = t === "dark" ? "☀️" : "🌙";
+  try { localStorage.setItem("lw-theme", t); } catch (e) {}
+}
+
+function init() {
+  $("year").textContent = new Date().getFullYear();
+  let t = "light";
+  try { t = localStorage.getItem("lw-theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); } catch (e) {}
+  applyTheme(t);
+  $("themeBtn").addEventListener("click", () => applyTheme(document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark"));
+  $("menuBtn").addEventListener("click", () => {
+    const open = $("menu").classList.toggle("open");
+    $("menuBtn").setAttribute("aria-expanded", open);
+  });
+  $("menu").addEventListener("click", () => { $("menu").classList.remove("open"); $("menuBtn").setAttribute("aria-expanded", "false"); });
+  $("citySearch").addEventListener("input", (e) => fillSelect(e.target.value));
+  $("citySelect").addEventListener("change", (e) => selectCity(e.target.value));
+  $("refreshBtn").addEventListener("click", loadAll);
+  fillSelect();
+  renderRivers();
+  loadAll();
+  setInterval(loadAll, 15 * 60 * 1000); // auto refresh every 15 minutes
+}
+document.addEventListener("DOMContentLoaded", init);
